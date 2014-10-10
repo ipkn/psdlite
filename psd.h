@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 #include <iostream>
+#include <vector>
+#include <unordered_map>
 
 namespace psd
 {
@@ -61,6 +63,18 @@ namespace psd
             BEtoLE(color_mode);
         }
     };
+    struct ImageResourceBlock
+    {
+        uint32_t signature;
+        uint16_t image_resource_id;
+        std::string name; // encoded as pascal string; 1 byte length header
+
+        std::vector<char> buffer;
+
+        uint32_t size() const;
+        bool read(std::istream&& stream);
+        bool write(std::ostream&& stream);
+    };
 #pragma pack(pop)
 
     class psd
@@ -76,11 +90,15 @@ namespace psd
         private:
             bool read_header(std::istream&& f);
             bool read_color_mode(std::istream&& f);
+            bool read_image_resources(std::istream&& f);
 
             bool write_header(std::ostream&& f);
             bool write_color_mode(std::ostream&& f);
+            bool write_image_resources(std::ostream&& f);
 
             bool valid_{false};
+
+            std::vector<ImageResourceBlock> image_resources;
     };
 
 }

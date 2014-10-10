@@ -25,4 +25,8 @@
 # Executables
 *.exe
 *.out
+*.out.dSYM
 *.app
+*.psd
+
+*.swp
