@@ -93,16 +93,26 @@ namespace psd
         return true;
     }
 
+    psd::psd()
+    {
+    }
+
     psd::psd(std::istream&& stream)
     {
+        load(std::move(stream));
+    }
+
+    bool psd::load(std::istream&& stream)
+    {
         if (!read_header(std::move(stream)))
-            return;
+            return false;
         if (!read_color_mode(std::move(stream)))
-            return;
+            return false;
         if (!read_image_resources(std::move(stream)))
-            return;
+            return false;
 
         valid_ = true;
+        return true;
     }
 
     bool psd::read_header(std::istream&& f)
@@ -152,6 +162,9 @@ namespace psd
         std::cout << "Image Resource Block length: " << length << std::endl;
 #endif
         auto start_pos = f.tellg();
+
+        image_resources.clear();
+
         while(f.tellg() - start_pos < length)
         {
             ImageResourceBlock b;

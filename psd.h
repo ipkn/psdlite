@@ -80,8 +80,10 @@ namespace psd
     class psd
     {
         public:
+            psd();
             psd(std::istream&& stream);
 
+            bool load(std::istream&& stream);
             bool save(std::ostream&& f);
 
             Header header;
