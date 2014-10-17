@@ -26,7 +26,7 @@ namespace psd
         auto start_pos = stream.tellg();
 #endif
         stream.read((char*)&signature, 4);
-        if (signature != *(uint32_t*)"8BIM")
+        if (signature != "8BIM")
         {
 #ifdef PSD_DEBUG
             std::cout << "Invalid image resource block signature: " << std::string((char*)&signature, (char*)&signature+4) << std::endl;;
@@ -177,17 +177,38 @@ namespace psd
         f.read(&data[0], size);
         return true;
     }
+
+    bool Layer::LayerBlendingRanges::write(std::ostream& f)
+    {
+        be<uint32_t> size = data.size();
+        f.write((char*)&size, 4);
+        f.write(&data[0], size);
+        return true;
+    }
     
+    bool Layer::LayerMask::write(std::ostream& f)
+    {
+        f.write((char*)&length, 4);
+        if (length)
+        {
+            f.write((char*)&top, 4*4+2);
+            uint32_t remaining = length - (4*4+2);
+            additional_data.resize(remaining);
+            f.write(&additional_data[0], remaining);
+        }
+        return true;
+    }
+
     bool Layer::LayerMask::read(std::istream& f)
     {
-        f.read((char*)&size, 4);
+        f.read((char*)&length, 4);
 #ifdef PSD_DEBUG
-        std::cout << "Reading mask (size: " << size << ")" << std::endl;
+        std::cout << "Reading mask (size: " << length << ")" << std::endl;
 #endif
-        if (size)
+        if (length)
         {
             f.read((char*)&top, 4*4+2);
-            uint32_t remaining = size - (4*4+2);
+            uint32_t remaining = length - (4*4+2);
             additional_data.resize(remaining);
             f.read(&additional_data[0], remaining);
         }
@@ -239,63 +260,30 @@ namespace psd
             case 3:
                 break;
         }
-        auto remaining = extra_data_length - (f.tellg()-extra_start_pos);
-        additional_extra_data.resize(remaining);
-        f.read(&additional_extra_data[0], remaining);
         for(char c:name)
             wname += (wchar_t)c;
-        char* p = &additional_extra_data[0];
         utf8name = name;
-        while(p < &additional_extra_data[0] + additional_extra_data.size())
+        while(f.tellg() - extra_start_pos < extra_data_length)
         {
-            if (*(uint32_t*)p != *(uint32_t*)"8BIM" &&
-                *(uint32_t*)p != *(uint32_t*)"8B64" )
-            {
-#ifdef PSD_DEBUG
-                std::cout << "Extra data signature error at: " << f.tellg() << ' ' << std::string(p, p+4) <<std::endl;
-#endif
-
+            ExtraData ed;
+            if (!ed.read(f))
                 return false;
-            }
-            p += 4;
-            std::string key(p, p+4);
-            p += 4;
-            be<uint32_t> length(*(be<uint32_t>*)p);
-            p += 4;
+            additional_extra_data.push_back(std::move(ed));
+        }
+
+        for(auto& ed:additional_extra_data)
+        {
 #ifdef PSD_DEBUG
-            std::cout << '\t' << key;
+            std::cout << '\t' << (std::string)ed.key;
 #endif
-            if (key == "luni")
+            if (ed.key == "luni")
             {
-                be<uint32_t> uni_length = *(be<uint32_t>*)p;
-                wname.clear();
-                for(uint32_t i = 0; i < uni_length; i ++)
-                {
-                    wname += (wchar_t)(uint16_t)*(be<uint16_t>*)(p+4+i*2);
-                }
-                utf8name.clear();
-                for(auto wc : wname)
-                {
-                    if (wc < 0x80)
-                        utf8name += (char)wc;
-                    else if (wc < 0x800) //110xxxxx 10xxxxxx
-                    {
-                        utf8name += (char)(0xC0 + ((wc>>6)&0x1F));
-                        utf8name += (char)(0x80 + (wc & 0x3F));
-                    }
-                    else  // 1110xxxx 10xxxxxx 10xxxxxx 6+6+4
-                    {
-                        utf8name += (char)(0xE0 + ((wc>>12)&0x0F));
-                        utf8name += (char)(0x80 + ((wc>>6) & 0x3F));
-                        utf8name += (char)(0x80 + (wc & 0x3F));
-                    }
-                }
+                ed.luni_read_name(wname, utf8name);
             }
-            else if (key == "TySh")
+            else if (ed.key == "TySh")
             {
                 has_text = true;
             }
-            p += length;
         }
 
 #ifdef PSD_DEBUG
@@ -306,10 +294,114 @@ namespace psd
         return true;
     }
 
+    bool ExtraData::read(std::istream& f)
+    {
+        f.read((char*)&signature, 4);
+        if (signature != "8BIM" && 
+            signature != "8B64")
+        {
+#ifdef PSD_DEBUG
+            std::cout << "Extra data signature error at: " << f.tellg() << ' ' << (std::string)signature <<std::endl;
+#endif
+            return false;
+        }
+
+        f.read((char*)&key, 4);
+        f.read((char*)&length, 4);
+        data.resize(length);
+        f.read(&data[0], length);
+        return true;
+    }
+
+    void ExtraData::luni_read_name(std::wstring& wname, std::string& utf8name)
+    {
+        char* p = &data[0];
+        be<uint32_t> uni_length = *(be<uint32_t>*)p;
+        wname.clear();
+        for(uint32_t i = 0; i < uni_length; i ++)
+        {
+            wname += (wchar_t)(uint16_t)*(be<uint16_t>*)(p+4+i*2);
+        }
+        utf8name.clear();
+        for(auto wc : wname)
+        {
+            if (wc < 0x80)
+                utf8name += (char)wc;
+            else if (wc < 0x800) //110xxxxx 10xxxxxx
+            {
+                utf8name += (char)(0xC0 + ((wc>>6)&0x1F));
+                utf8name += (char)(0x80 + (wc & 0x3F));
+            }
+            else  // 1110xxxx 10xxxxxx 10xxxxxx 6+6+4
+            {
+                utf8name += (char)(0xE0 + ((wc>>12)&0x0F));
+                utf8name += (char)(0x80 + ((wc>>6) & 0x3F));
+                utf8name += (char)(0x80 + (wc & 0x3F));
+            }
+        }
+    }
+
+    bool ExtraData::write(std::ostream& f)
+    {
+        f.write((char*)&signature, 4);
+        f.write((char*)&key, 4);
+        if (data.size() % 2 == 1)
+            data.push_back(0);
+        f.write((char*)&length, 4);
+        data.resize(length);
+        f.write(&data[0], length);
+        return true;
+    }
+
     bool Layer::write(std::ostream& f)
     {
-        // TODO
-        assert(false);
+        num_channels = channel_infos.size();
+        f.write((char*)&top, 4*4+2);
+
+        for(auto& ci:channel_infos)
+        {
+            char buffer[6];
+
+            *(be<uint16_t>*)buffer = ci.first;
+            *(be<uint32_t>*)(buffer+2) = ci.second;
+
+            f.write(buffer, 6);
+        }
+        extra_data_length = mask.size() + blending_ranges.size();
+        for(auto& ed:additional_extra_data)
+        {
+            extra_data_length += ed.size();
+        }
+        f.write((char*)&blend_signature, 4*3+4);
+
+        if (!mask.write(f))
+            return false;
+        if (!blending_ranges.write(f))
+            return false;
+
+        uint8_t name_size;
+        f.write((char*)&name_size, 1);
+        name.resize(name_size);
+        f.write(&name[0], name_size);
+        switch(name_size%4)
+        {
+            case 0:
+                f.write("\0\0\0", 3);
+                break;
+            case 1:
+                f.write("\0\0", 2);
+                break;
+            case 2:
+                f.write("\0", 1);
+                break;
+            case 3:
+                break;
+        }
+        for(auto& ed:additional_extra_data)
+        {
+            ed.write(f);
+        }
+
         return true;
     }
 

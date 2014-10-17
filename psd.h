@@ -5,6 +5,7 @@
 #include <iostream>
 #include <vector>
 #include <unordered_map>
+#include <cassert>
 
 namespace psd
 {
@@ -36,7 +37,6 @@ namespace psd
         BEtoLE(*(uint16_t*)&x);
     }
 
-
     template <typename T>
     struct be
     {
@@ -56,7 +56,7 @@ namespace psd
         {
         }
 
-        operator T()
+        operator T() const
         {
             T y = x;
             BEtoLE(y);
@@ -77,7 +77,65 @@ namespace psd
         }
 
         T x;
+
+        T operator += (T y)
+        {
+            x += y;
+            return x;
+        }
+
+        T operator -= (T y)
+        {
+            x -= y;
+            return x;
+        }
     };
+
+    struct Signature
+    {
+        Signature()
+        {
+        }
+
+        Signature(uint32_t sig)
+            : sig(sig)
+        {
+        }
+
+        Signature(const std::string& str)
+        {
+            assert(str.size() == 4);
+            sig = *(uint32_t*)str.data();
+        }
+
+        uint32_t sig{};
+
+        operator std::string()
+        {
+            return std::string((char*)&sig, (char*)&sig+4);
+        }
+    };
+
+    inline bool operator == (const Signature& sig, const std::string& str)
+    {
+        return sig.sig == Signature(str).sig;
+    }
+
+    inline bool operator == (const std::string& str, const Signature& sig)
+    {
+        return sig.sig == Signature(str).sig;
+    }
+
+    inline bool operator != (const Signature& sig, const std::string& str)
+    {
+        return sig.sig != Signature(str).sig;
+    }
+
+    inline bool operator != (const std::string& str, const Signature& sig)
+    {
+        return sig.sig != Signature(str).sig;
+    }
+
 
     enum class ColorMode : uint16_t
     {
@@ -94,7 +152,7 @@ namespace psd
 #pragma pack(push, 1)
     struct Header
     {
-        uint32_t signature;
+        Signature signature;
         be<uint16_t> version;
         uint16_t dummy1{};
         uint32_t dummy2{};
@@ -107,7 +165,7 @@ namespace psd
 
     struct ImageResourceBlock
     {
-        uint32_t signature;
+        Signature signature;
         be<uint16_t> image_resource_id;
         std::string name; // encoded as pascal string; 1 byte length header
 
@@ -117,57 +175,55 @@ namespace psd
         bool read(std::istream& stream);
         bool write(std::ostream& stream);
     };
+    
+    struct ExtraData
+    {
+        Signature signature;
+        Signature key;
+        be<uint32_t> length;
+        std::vector<char> data;
+
+        uint32_t size() const { return data.size() + (data.size()%2); }
+        bool read(std::istream& stream);
+        bool write(std::ostream& stream);
+
+        void luni_read_name(std::wstring& wname, std::string& utf8name);
+    };
 
     struct Layer
     {
         be<uint32_t> top, left, bottom, right;
         be<uint16_t> num_channels;
         std::vector<std::pair<be<uint16_t>, be<uint32_t>>> channel_infos; // ID, length
-        uint32_t blend_signature;
+        Signature blend_signature;
         be<uint32_t> blend_key;
         uint8_t opacity; // 0 for transparent
         uint8_t clipping; // 0 base, 1 non-base
         uint8_t bit_flags; 
         uint8_t dummy1;
         be<uint32_t> extra_data_length;
-        std::vector<char> additional_extra_data;
+        std::vector<ExtraData> additional_extra_data;
 
         struct LayerMask
         {
-            be<uint32_t> size;
+            uint32_t size() const { return 4 + (uint32_t)length; }
+            be<uint32_t> length;
             be<uint32_t> top, left, bottom, right;
             uint8_t default_color;
             uint8_t flags;
             std::vector<char> additional_data;
 
             bool read(std::istream& f);
-            bool write(std::ostream& f)
-            {
-                f.write((char*)&size, 4);
-                if (size)
-                {
-                    f.write((char*)&top, 4*4+2);
-                    uint32_t remaining = size - (4*4+2);
-                    additional_data.resize(remaining);
-                    f.write(&additional_data[0], remaining);
-                }
-                return true;
-            }
+            bool write(std::ostream& f);
 
         } mask;
 
         struct LayerBlendingRanges
         {
+            uint32_t size() const { return data.size() + 4; }
             std::vector<char> data;
             bool read(std::istream& f);
-
-            bool write(std::ostream& f)
-            {
-                be<uint32_t> size = data.size();
-                f.write((char*)&size, 4);
-                f.write(&data[0], size);
-                return true;
-            }
+            bool write(std::ostream& f);
         } blending_ranges;
         std::string name;
         std::wstring wname;
