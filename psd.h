@@ -94,6 +94,7 @@ namespace psd
     struct Signature
     {
         Signature()
+            : sig(0)
         {
         }
 
@@ -108,7 +109,7 @@ namespace psd
             sig = *(uint32_t*)str.data();
         }
 
-        uint32_t sig{};
+        uint32_t sig;
 
         operator std::string()
         {
@@ -152,10 +153,13 @@ namespace psd
 #pragma pack(push, 1)
     struct Header
     {
+        Header()
+            : dummy1(0), dummy2(0)
+        {}
         Signature signature;
         be<uint16_t> version;
-        uint16_t dummy1{};
-        uint32_t dummy2{};
+        uint16_t dummy1;
+        uint32_t dummy2;
         be<uint16_t> num_channels;
         be<uint32_t> height;
         be<uint32_t> width;
@@ -190,11 +194,37 @@ namespace psd
         void luni_read_name(std::wstring& wname, std::string& utf8name);
     };
 
+    struct ImageData
+    {
+        uint32_t w;
+        uint32_t h;
+        be<uint16_t> compression_method;
+        std::vector<std::vector<char>> data;
+        bool read(std::istream& f, uint32_t w, uint32_t h);
+        bool write(std::ostream& f);
+
+        bool read_with_method(std::istream& f, uint32_t w, uint32_t h, uint16_t compression_method);
+        bool write_with_method(std::ostream& f, uint16_t compression_method);
+    };
+
+    struct MultipleImageData
+    {
+        uint32_t w;
+        uint32_t h;
+        uint32_t count;
+        be<uint16_t> compression_method;
+        std::vector<std::vector<std::vector<char>>> datas;
+        bool read(std::istream& f, uint32_t w, uint32_t h, uint32_t count, uint16_t bit_depth);
+        bool write(std::ostream& f);
+    };
+
     struct Layer
     {
+        Layer() : has_text(false) {}
         be<uint32_t> top, left, bottom, right;
         be<uint16_t> num_channels;
-        std::vector<std::pair<be<uint16_t>, be<uint32_t>>> channel_infos; // ID, length
+        std::vector<std::pair<be<int16_t>, be<uint32_t>>> channel_infos; // ID, length
+        std::vector<ImageData> channel_info_data;
         Signature blend_signature;
         be<uint32_t> blend_key;
         uint8_t opacity; // 0 for transparent
@@ -228,22 +258,22 @@ namespace psd
         std::string name;
         std::wstring wname;
         std::string utf8name;
-        bool has_text{};
+        bool has_text;
 
         bool read(std::istream& f);
         bool write(std::ostream& f);
-    };
-
-    struct ImageData
-    {
+        bool read_images(std::istream& f);
+        bool write_images(std::ostream& f);
     };
 
     struct LayerInfo
     {
-        be<int16_t> num_layers{};
-        bool has_merged_alpha_channel{};
+        LayerInfo()
+            : num_layers(0), has_merged_alpha_channel(false)
+        {}
+        be<int16_t> num_layers;
+        bool has_merged_alpha_channel;
         std::vector<Layer> layers;
-        std::vector<ImageData> channel_image_datas;
 
         bool read(std::istream& stream);
         bool write(std::ostream& stream);
@@ -256,6 +286,7 @@ namespace psd
         be<uint16_t> color_component[4];
         be<uint16_t> opacity; // 0 = transparent 100 = opaque
         uint8_t kind;
+        std::vector<char> data;
 
         bool read(std::istream& stream);
         bool write(std::ostream& stream);
@@ -280,8 +311,8 @@ namespace psd
             std::vector<ImageResourceBlock> image_resources;
             LayerInfo layer_info;
             GlobalLayerMaskInfo global_layer_mask_info;
-            std::vector<Layer>& layers{layer_info.layers};
-            std::vector<ImageData>& channel_image_datas{layer_info.channel_image_datas};
+            std::vector<Layer>& layers() { return layer_info.layers; }
+            MultipleImageData merged_image;
 
             operator bool();
         private:
@@ -296,7 +327,7 @@ namespace psd
             bool write_color_mode(std::ostream& f);
             bool write_image_resources(std::ostream& f);
 
-            bool valid_{false};
+            bool valid_;
 
     };
 
