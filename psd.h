@@ -225,6 +225,14 @@ namespace psd
         be<uint16_t> num_channels;
         std::vector<std::pair<be<int16_t>, be<uint32_t>>> channel_infos; // ID, length
         std::vector<ImageData> channel_info_data;
+        ImageData* get_channel_info_by_id(int16_t id)
+        {
+            for(uint16_t i = 0; i < channel_infos.size(); i ++)
+                if (channel_infos[i].first == id)
+                    return &channel_info_data[i];
+            return nullptr;
+        }
+
         Signature blend_signature;
         be<uint32_t> blend_key;
         uint8_t opacity; // 0 for transparent
