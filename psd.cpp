@@ -427,6 +427,7 @@ namespace psd
             {
                 return false;
             }
+            channel_info_data.push_back(std::move(id));
         }
 
         return true;
