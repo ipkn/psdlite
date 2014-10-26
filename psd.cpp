@@ -1,7 +1,8 @@
 #include "psd.h"
 #include <cassert>
+#include <sstream>
 
-//#define PSD_DEBUG
+#define PSD_DEBUG
 
 namespace psd
 {
@@ -53,9 +54,10 @@ namespace psd
         std::cout << "Block "<<image_resource_id<<" name: (" << (int)length << ")" << name << ' ' << buffer_length << ' ' << buffer.size() << ' ' << stream.tellg()-start_pos << ' ' << size() << std::endl;
 
         if (stream.tellg() - start_pos != size())
-    {
+        {
+            std::cout << "size wrong" << std::endl;
             return false;
-    }
+        }
 #endif
 
         return true;
@@ -85,7 +87,10 @@ namespace psd
 
 #ifdef PSD_DEBUG
         if (stream.tellp() - start_pos != size())
+        {
+            std::cerr << "if (stream.tellp() - start_pos != size())" << std::endl;
             return false;
+        }
 #endif
 
         return true;
@@ -120,10 +125,22 @@ namespace psd
         f.read((char*)&header, sizeof(header));
 
         if (header.signature != *(uint32_t*)"8BPS")
+        {
+            std::cerr << "signature error" << std::endl;
             return false;
+        }
 
         if (header.version != 1)
+        {
+            std::cerr << "header version error" << std::endl;
             return false;
+        }
+
+        if (header.bit_depth != 8)
+        {
+            std::cerr << "Not supported bit depth: " << header.bit_depth << std::endl;
+            return false;
+        }
 
 #ifdef PSD_DEBUG
         std::cout << "Header:" << std::endl;
@@ -151,34 +168,15 @@ namespace psd
         return true;
     }
 
-    bool psd::read_image_resources(std::istream& f)
+    uint16_t Layer::name_size()
     {
-        be<uint32_t> length;
-        f.read((char*)&length, 4);
-#ifdef PSD_DEBUG
-        std::cout << "Image Resource Block length: " << length << std::endl;
-#endif
-        auto start_pos = f.tellg();
-
-        image_resources.clear();
-
-        while(f.tellg() - start_pos < length)
-        {
-            ImageResourceBlock b;
-            if (!b.read(f))
-                return false;
-            image_resources.push_back(std::move(b));
-        }
-        return true;
+        return padded_size<4>(1 + name.size());
     }
 
     bool Layer::LayerBlendingRanges::read(std::istream& f)
     {
         be<uint32_t> size;
         f.read((char*)&size, 4);
-#ifdef PSD_DEBUG
-        std::cout << "Reading blending ranges (size: " << size << ")" << std::endl;
-#endif
         data.resize(size);
         f.read(&data[0], size);
         return true;
@@ -187,6 +185,9 @@ namespace psd
     bool Layer::LayerBlendingRanges::write(std::ostream& f)
     {
         be<uint32_t> size = data.size();
+#ifdef PSD_DEBUG
+        std::cout << "Writing blending ranges (size: " << size << ")" << std::endl;
+#endif
         f.write((char*)&size, 4);
         f.write(&data[0], size);
         return true;
@@ -230,9 +231,16 @@ namespace psd
 #endif
         for(uint16_t i = 0; i < num_channels; i ++)
         {
-            char buffer[6];
-            f.read(buffer, 6);
-            channel_infos.emplace_back(*(be<int16_t>*)buffer, *(be<uint32_t>*)(buffer+2));
+            unsigned char buffer[6];
+            f.read((char*)buffer, 6);
+            channel_infos.emplace_back(
+                (int16_t)((uint16_t)buffer[0]*256+(uint16_t)buffer[1]),
+                (uint32_t)(
+                    ((uint32_t)buffer[2]<<24)+
+                    ((uint32_t)buffer[3]<<16)+
+                    ((uint32_t)buffer[4]<<8)+
+                    ((uint32_t)buffer[5]<<0))
+                );
         }
         f.read((char*)&blend_signature, 4*3+4);
 #ifdef PSD_DEBUG
@@ -244,9 +252,16 @@ namespace psd
         auto extra_start_pos = f.tellg();
 
         if (!mask.read(f))
+        {
+            std::cerr << "mask read fail" << std::endl;
             return false;
+        }
+ 
         if (!blending_ranges.read(f))
+        {
+            std::cerr << "blending ranges read fail" << std::endl;
             return false;
+        }
 
         uint8_t name_size;
         f.read((char*)&name_size, 1);
@@ -269,13 +284,25 @@ namespace psd
         for(char c:name)
             wname += (wchar_t)c;
         utf8name = name;
+#ifdef PSD_DEBUG
+            std::cout << "ED size" << mask.size() << " + " << blending_ranges.size();
+#endif
         while(f.tellg() - extra_start_pos < extra_data_length)
         {
             ExtraData ed;
             if (!ed.read(f))
+            {
+                std::cerr << "fail to read ExtraData" << std::endl;
                 return false;
+            }
+#ifdef PSD_DEBUG
+            std::cout << " + " << ed.size();
+#endif
             additional_extra_data.push_back(std::move(ed));
         }
+#ifdef PSD_DEBUG
+            std::cout << std::endl;
+#endif
 
         for(auto& ed:additional_extra_data)
         {
@@ -361,23 +388,41 @@ namespace psd
 
     bool Layer::write(std::ostream& f)
     {
+#ifdef PSD_DEBUG
+        if (num_channels != channel_infos.size())
+            std::cout << "Image channel count: " << num_channels << " -> " << channel_infos.size() << std::endl;
+#endif
         num_channels = channel_infos.size();
         f.write((char*)&top, 4*4+2);
 
+        int idx = 0;
         for(auto& ci:channel_infos)
         {
-            char buffer[6];
+            std::ostringstream image_buffer;
+            channel_info_data[idx++].write(image_buffer);
+#ifdef PSD_DEBUG
+            //std::cout << "Image channel size change: " << ci.second << " -> " << image_buffer.str().size() << std::endl;
+#endif
+            ci.second = image_buffer.str().size();
 
-            *(be<uint16_t>*)buffer = ci.first;
-            *(be<uint32_t>*)(buffer+2) = ci.second;
-
-            f.write(buffer, 6);
+            f.write((char*)&ci.first, 2);
+            f.write((char*)&ci.second, 4);
         }
-        extra_data_length = mask.size() + blending_ranges.size();
+        uint32_t old_size = extra_data_length;
+        extra_data_length = mask.size() + blending_ranges.size() + name_size();
+#ifdef PSD_DEBUG
+        std::cout << "Writing Layer " << old_size << " -> " << mask.size() << " + " << blending_ranges.size() << " + " << name_size();
+#endif
         for(auto& ed:additional_extra_data)
         {
             extra_data_length += ed.size();
+#ifdef PSD_DEBUG
+            std::cout << " + " << ed.size();
+#endif
         }
+#ifdef PSD_DEBUG
+        std::cout << " : " << extra_data_length << std::endl;
+#endif
         f.write((char*)&blend_signature, 4*3+4);
 
         if (!mask.write(f))
@@ -385,9 +430,8 @@ namespace psd
         if (!blending_ranges.write(f))
             return false;
 
-        uint8_t name_size;
+        uint8_t name_size = name.size();
         f.write((char*)&name_size, 1);
-        name.resize(name_size);
         f.write(&name[0], name_size);
         switch(name_size%4)
         {
@@ -415,9 +459,6 @@ namespace psd
     {
         for(auto& ci:channel_infos)
         {
-//#ifdef PSD_DEBUG
-            //std::cout << "Reading channel " << ci.first << std::endl;
-//#endif
             ImageData id;
             auto pos = f.tellg();
             id.read(f, right-left, bottom-top);
@@ -425,6 +466,7 @@ namespace psd
 
             if (read_size != ci.second)
             {
+                std::cerr << "Layer read image fail" << ' ' << read_size << ' ' << ci.second << std::endl;
                 return false;
             }
             channel_info_data.push_back(std::move(id));
@@ -433,10 +475,21 @@ namespace psd
         return true;
     }
 
+    bool Layer::write_images(std::ostream& f)
+    {
+        for(auto& id:channel_info_data)
+        {
+            if (!id.write(f))
+                return false;
+        }
+        return true;
+    }
+
     bool LayerInfo::read(std::istream& f)
     {
         be<uint32_t> length;
         f.read((char*)&length, 4);
+        auto start_pos = f.tellg();
 
         f.read((char*)&num_layers, 2);
         
@@ -450,21 +503,34 @@ namespace psd
         std::cout  << "Number of layers: " << num_layers << std::endl;
 #endif
 
-        for(uint32_t i = 0; i < num_layers; i ++)
+        for(int32_t i = 0; i < num_layers; i ++)
         {
 #ifdef PSD_DEBUG
-            std::cout << "Layer " << i << ":" << std::endl;
+            std::cout << "Layer " << i << ": (at " << f.tellg() << ")" << std::endl;
 #endif
             Layer l;
             if (!l.read(f))
+            {
+                std::cerr << "Layer read fail" << std::endl;
                 return false;
+            }
             layers.push_back(std::move(l));
         }
 
         for(auto& l:layers)
         {
             if (!l.read_images(f))
+            {
+                std::cerr << "Layer read images fail" << std::endl;
                 return false;
+            }
+        }
+
+        auto diff = f.tellg() - start_pos;
+        if (diff != length && diff + 1 != length)
+        {
+            std::cerr << "Layer diff fail" << diff << ' ' << length << std::endl;
+            return false;
         }
         /*
         if (f.tellg()%2 == 1)
@@ -481,8 +547,34 @@ namespace psd
 
     bool LayerInfo::write(std::ostream& f)
     {
-        // TODO
-        assert(false);
+        std::ostringstream os;
+        be<int16_t> adjusted_num_layers;
+        adjusted_num_layers = num_layers;
+        if (has_merged_alpha_channel)
+            adjusted_num_layers = -(int16_t)num_layers;
+#ifdef PSD_DEBUG
+        std::cout << "Writing number of layers: " << num_layers <<' ' << adjusted_num_layers << std::endl;
+#endif
+        os.write((char*)&adjusted_num_layers, 2);
+        for(auto& l:layers)
+        {
+            if (!l.write(os))
+                return false;
+        }
+        for(auto& l:layers)
+        {
+            if (!l.write_images(os))
+                return false;
+        }
+
+        std::string output = os.str();
+        if (output.size() % 2 == 1)
+            output += '\x00';
+
+        be<uint32_t> length = output.size();
+        f.write((char*)&length, 4);
+        f.write(output.data(), output.size());
+        
         return true;
     }
 
@@ -509,8 +601,11 @@ namespace psd
     bool GlobalLayerMaskInfo::write(std::ostream& f)
     {
         f.write((char*)&length, 4);
-        f.write((char*)&overlay_colorspace, 2+2*4+2+1);
-        f.write((char*)&data[0], data.size());
+        if (length)
+        {
+            f.write((char*)&overlay_colorspace, 2+2*4+2+1);
+            f.write((char*)&data[0], data.size());
+        }
         return true;
     }
 
@@ -519,15 +614,12 @@ namespace psd
         this->w = w;
         this->h = h;
         this->compression_method = compression_method;
-//#ifdef PSD_DEBUG
-        //std::cout << "Image compression_method: " << compression_method << std::endl;
-//#endif
         switch(compression_method)
         {
             case 0: // RAW
                 {
                     data.resize(h);
-                    for(int y = 0; y < h; y ++)
+                    for(uint32_t y = 0; y < h; y ++)
                     {
                         data[y].resize(w);
                         f.read(&data[y][0], w);
@@ -545,6 +637,7 @@ namespace psd
                         data[y].resize(lengths[y]);
                         f.read(&data[y][0], lengths[y]);
                         std::vector<char> uncompressed;
+
                         for(uint32_t i = 0; i < data[y].size(); i ++)
                         {
                             int c = data[y][i];
@@ -604,16 +697,136 @@ namespace psd
         return read_with_method(f, w, h, compression_method);
     }
 
-    bool ImageData::write_with_method(std::ostream& f, uint16_t compression_method)
+    size_t PackBitCompress(const std::vector<char>& input, std::vector<char>& output)
     {
-        assert(false);
-        return true;
+        auto it = input.begin();
+        auto output_size_at_start = output.size();
+        std::vector<char> sequence;
+        while(it < input.end())
+        {
+            if (std::distance(it, input.end()) >= 3 && *it == *(it+1) && *it == *(it+2))
+            {
+                if (!sequence.empty())
+                {
+                    output.push_back((char)sequence.size()-1);
+                    output.insert(output.end(), sequence.begin(), sequence.end());
+                    sequence.clear();
+                }
+                int count = 0;
+                char c = *it;
+                while(it < input.end() && *it == c) ++it, ++count;
+                while(count > 128)
+                {
+                    count -= 128;
+                    output.push_back((char)-127);
+                    output.push_back(c);
+                }
+                output.push_back((char)(1-count));
+                output.push_back(c);
+            }
+            else
+            {
+                sequence.push_back(*it);
+                if (sequence.size() == 128)
+                {
+                    output.push_back(127);
+                    output.insert(output.end(), sequence.begin(), sequence.end());
+                    sequence.clear();
+                }
+                ++it;
+            }
+        }
+        if (!sequence.empty())
+        {
+            output.push_back((char)sequence.size()-1);
+            output.insert(output.end(), sequence.begin(), sequence.end());
+            sequence.clear();
+        }
+#ifdef PSD_DEBUG
+        {
+            std::vector<char> uncompressed;
+            for(uint32_t i = output_size_at_start; i < output.size(); i ++)
+            {
+                int c = output[i];
+                if (c >= 128) c -= 256;
+                if (c == -128)
+                {
+                    continue;
+                }
+                else if (c < 0)
+                {
+                    i++;
+                    for(int j = 0; j < 1-c; j++)
+                        uncompressed.push_back(output[i]);
+                }
+                else
+                {
+                    if (i+1 + c+1 > output.size())
+                    {
+#ifdef PSD_DEBUG
+                        std::cout << "PackBit source length invalid" << std::endl;
+#endif
+                        assert(false);
+                    }
+                    uncompressed.insert(uncompressed.end(), output.begin()+i+1, output.begin()+i+1+c+1);
+                    i += c+1;
+                }
+            }
+            if (input.size() != uncompressed.size())
+            {
+                for(uint32_t i = 0; i < input.size(); i ++)
+                    std::cout << (int)input[i] << ' ';
+                std::cout << std::endl;
+                for(uint32_t i = output_size_at_start; i < output.size(); i ++)
+                    std::cout << (int)output[i] << ' ';
+                std::cout << std::endl;
+                for(uint32_t i = 0; i < uncompressed.size(); i ++)
+                    std::cout << (int)uncompressed[i] << ' ';
+                std::cout << std::endl;
+
+            }
+            assert(input.size() == uncompressed.size());
+            for(uint32_t i = 0; i < uncompressed.size(); i ++)
+            {
+                assert(input[i] == uncompressed[i]);
+            }
+        }
+#endif
+        return output.size() - output_size_at_start;
     }
 
     bool ImageData::write(std::ostream& f)
     {
-        // TODO
-        assert(false);
+        uint64_t raw_size = w*h;
+        std::vector<be<uint16_t>> sizes;
+        std::vector<char> merged;
+        uint64_t packed_size = 0;
+
+        for(auto& line:data)
+        {
+            sizes.push_back(PackBitCompress(line, merged));
+            packed_size += (uint16_t)sizes.back();
+        }
+        
+        if (raw_size > packed_size + 2 * sizes.size())
+        {
+            // using PackBits
+            compression_method = 1;
+            f.write((char*)&compression_method, 2);
+            f.write((char*)&sizes[0], sizes.size() * 2);
+            f.write(merged.data(), merged.size());
+        }
+        else
+        {
+            // using raw
+            compression_method = 0;
+            f.write((char*)&compression_method, 2);
+            for(auto& line:data)
+            {
+                f.write(line.data(), line.size());
+            }
+        }
+
         return true;
     }
 
@@ -625,13 +838,16 @@ namespace psd
         f.read((char*)&compression_method, 2);
         ImageData imageData;
         if (!imageData.read_with_method(f, w, h*count, compression_method))
+        {
+            std::cerr << "MultipleImageData::read error" << std::endl;
             return false;
+        }
         datas.resize(count);
         uint32_t row = 0;
         for(uint32_t ch = 0; ch < count; ch ++)
         {
             datas[ch].resize(h);
-            for(int y = 0; y < h; y ++)
+            for(uint32_t y = 0; y < h; y ++)
             {
                 datas[ch][y].swap(imageData.data[row++]);
                 if (datas[ch][y].size() != w*bit_depth/8)
@@ -643,6 +859,21 @@ namespace psd
                 }
             }
         }
+        return true;
+    }
+
+    bool MultipleImageData::write(std::ostream& f)
+    {
+        ImageData imageData;
+        imageData.w = w;
+        imageData.h = h * datas.size();
+        for(auto& data:datas)
+        {
+            for(auto& line:data)
+                imageData.data.push_back(line);
+        }
+        if (!imageData.write(f))
+            return false;
         return true;
     }
 
@@ -668,10 +899,28 @@ namespace psd
 #ifdef PSD_DEBUG
             std::cout << "Layer remaining: " << remaining << " at " << f.tellg() << std::endl;
 #endif
-            std::vector<char> additional_layer_data;
             additional_layer_data.resize(remaining);
             f.read(&additional_layer_data[0], remaining);
         }
+
+        return true;
+    }
+
+    bool psd::write_layers_and_masks(std::ostream& f)
+    {
+        std::ostringstream os;
+
+        if (!layer_info.write(os))
+            return false;
+        if (!global_layer_mask_info.write(os))
+            return false;
+
+        os.write(additional_layer_data.data(), additional_layer_data.size());
+
+        std::string output = os.str();
+        be<uint32_t> length(output.size());
+        f.write((char*)&length, 4);
+        f.write(output.data(), output.size());
 
         return true;
     }
@@ -682,6 +931,13 @@ namespace psd
             return false;
         if (!write_color_mode(f))
             return false;
+        if (!write_image_resources(f))
+            return false;
+        if (!write_layers_and_masks(f))
+            return false;
+        if (!merged_image.write(f))
+            return false;
+
         return true;
     }
 
@@ -698,9 +954,33 @@ namespace psd
         return true;
     }
 
+    bool psd::read_image_resources(std::istream& f)
+    {
+        be<uint32_t> length;
+        f.read((char*)&length, 4);
+#ifdef PSD_DEBUG
+        std::cout << "Image Resource Block length: " << length << std::endl;
+#endif
+        auto start_pos = f.tellg();
+
+        image_resources.clear();
+
+        while(f.tellg() - start_pos < length)
+        {
+            ImageResourceBlock b;
+            if (!b.read(f))
+            {
+                std::cerr << "Cannot read ImageResourceBlock" << std::endl;
+                return false;
+            }
+            image_resources.push_back(std::move(b));
+        }
+        return true;
+    }
+
     bool psd::write_image_resources(std::ostream& f)
     {
-        uint32_t length = 0;
+        be<uint32_t> length = 0;
         for(auto& r:image_resources)
         {
             length += r.size();

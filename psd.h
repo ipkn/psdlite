@@ -48,7 +48,7 @@ namespace psd
         be(T x)
             : x(x)
         {
-            BEtoLE(x);
+            BEtoLE(this->x);
         }
 
         be(const be& y)
@@ -65,14 +65,14 @@ namespace psd
 
         be& operator = (be y)
         {
-            x = y;
+            x = y.x;
             return *this;
         }
 
         be& operator = (T y)
         {
             x = y;
-            BEtoLE(y);
+            BEtoLE(x);
             return *this;
         }
 
@@ -80,14 +80,20 @@ namespace psd
 
         T operator += (T y)
         {
+            BEtoLE(x);
             x += y;
-            return x;
+            T xx = x;
+            BEtoLE(x);
+            return xx;
         }
 
         T operator -= (T y)
         {
+            BEtoLE(x);
             x -= y;
-            return x;
+            T xx = x;
+            BEtoLE(x);
+            return xx;
         }
     };
 
@@ -187,7 +193,7 @@ namespace psd
         be<uint32_t> length;
         std::vector<char> data;
 
-        uint32_t size() const { return data.size() + (data.size()%2); }
+        uint32_t size() const { return 12+data.size() + (data.size()%2); }
         bool read(std::istream& stream);
         bool write(std::ostream& stream);
 
@@ -204,7 +210,6 @@ namespace psd
         bool write(std::ostream& f);
 
         bool read_with_method(std::istream& f, uint32_t w, uint32_t h, uint16_t compression_method);
-        bool write_with_method(std::ostream& f, uint16_t compression_method);
     };
 
     struct MultipleImageData
@@ -241,6 +246,8 @@ namespace psd
         uint8_t dummy1;
         be<uint32_t> extra_data_length;
         std::vector<ExtraData> additional_extra_data;
+
+        uint16_t name_size();
 
         struct LayerMask
         {
@@ -316,10 +323,14 @@ namespace psd
             bool save(std::ostream& f);
 
             Header header;
+
             std::vector<ImageResourceBlock> image_resources;
+
             LayerInfo layer_info;
             GlobalLayerMaskInfo global_layer_mask_info;
+            std::vector<char> additional_layer_data;
             std::vector<Layer>& layers() { return layer_info.layers; }
+
             MultipleImageData merged_image;
 
             operator bool();
@@ -334,6 +345,7 @@ namespace psd
             bool write_header(std::ostream& f);
             bool write_color_mode(std::ostream& f);
             bool write_image_resources(std::ostream& f);
+            bool write_layers_and_masks(std::ostream& f);
 
             bool valid_;
 
